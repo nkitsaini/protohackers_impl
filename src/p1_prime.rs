@@ -5,17 +5,13 @@ const METHOD_NAME: &'static str = "isPrime";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Input {
     method: String,
-    number: f64
+    number: f64,
 }
 impl Input {
     pub fn parse_bytes(data: Vec<u8>) -> Option<Self> {
         match String::from_utf8(data) {
-            Ok(v) => {
-                Self::parse(v)
-            },
-            Err(x) => {
-                None
-            }
+            Ok(v) => Self::parse(v),
+            Err(x) => None,
         }
     }
     pub fn parse(content: String) -> Option<Self> {
@@ -25,20 +21,19 @@ impl Input {
         } else {
             Some(data)
         }
-
     }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 struct Output {
     method: String,
-    prime: Option<bool>
+    prime: Option<bool>,
 }
 impl Output {
     pub fn new(is_prime: Option<bool>) -> Self {
         Self {
             method: METHOD_NAME.to_string(),
-            prime: is_prime
+            prime: is_prime,
         }
     }
     pub fn malformed() -> Self {
@@ -51,11 +46,11 @@ impl Output {
 
 fn is_prime(x: f64) -> bool {
     if x < 0. {
-        return false
+        return false;
     }
     let y = x.ceil() as u64;
     if y as f64 != x {
-        return false
+        return false;
     }
 
     primes::is_prime(y)
@@ -79,17 +74,17 @@ fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
         //     data.append(&mut buf.clone().to_vec());
         //     assert_eq!(total_bytes, data.len());
         // }
-        
+
         // let val = String::from_utf8(data.clone())?;
         // dbg!("INput str", val.clone());
         let output = match Input::parse(inp_data) {
             Some(v) => {
                 dbg!("Valid Input", v.clone()); //, val.clone());
-                Output::valid(is_prime(v.number))    
-            },
+                Output::valid(is_prime(v.number))
+            }
             None => {
                 dbg!("InValid Input"); //, val.clone());
-                break
+                break;
             }
         };
         dbg!(output.clone());
@@ -108,12 +103,8 @@ pub fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3007")?;
 
     for stream in listener.incoming() {
-        thread::spawn(|| -> anyhow::Result<()> {
-            dbg!(handle_client(stream?))
-        });
+        thread::spawn(|| -> anyhow::Result<()> { dbg!(handle_client(stream?)) });
     }
 
     Ok(())
-
 }
-

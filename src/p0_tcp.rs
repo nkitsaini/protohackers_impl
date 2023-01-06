@@ -1,6 +1,6 @@
 use std::io::prelude::*;
-use std::thread;
 use std::net::{TcpListener, TcpStream};
+use std::thread;
 
 fn handle_client(stream: &mut TcpStream) -> anyhow::Result<()> {
     let mut data = vec![];
@@ -15,11 +15,8 @@ pub fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3007")?;
 
     for stream in listener.incoming() {
-        thread::spawn(|| -> anyhow::Result<()> {
-            dbg!(handle_client(&mut stream?))
-        });
+        thread::spawn(|| -> anyhow::Result<()> { dbg!(handle_client(&mut stream?)) });
     }
 
     Ok(())
-
 }
