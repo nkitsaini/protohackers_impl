@@ -1,5 +1,5 @@
 use serde::{Serialize, Deserialize};
-use std::io::prelude::*;
+use std::io::{prelude::*, BufReader};
 use std::ops::Add;
 use std::thread;
 use std::net::{TcpListener, TcpStream};
@@ -65,27 +65,34 @@ fn is_prime(x: f64) -> bool {
     primes::is_prime(y)
 }
 
-fn handle_client(stream: &mut TcpStream) -> anyhow::Result<()> {
+fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
+    // stream.split();
+    let mut conn = BufReader::new(stream.try_clone()?);
     loop {
-        let mut data = vec![];
-        let mut buf = [0; 1];
-        stream.read_exact(&mut buf)?;
-        data.append(&mut buf.clone().to_vec());
-        while !dbg!(String::from_utf8(data.clone()))?.contains("\n") {
-            let mut buf = [0; 1];
-            stream.read_exact(&mut buf)?;
-            data.append(&mut buf.clone().to_vec());
-        }
+        // let mut data = vec![];
+        let mut inp_data = String::new();
+        conn.read_line(&mut inp_data)?;
+        // let mut buf = Vec::with_capacity(100);
+        // let mut total_bytes = 0;
+        // total_bytes += stream.read(&mut buf)?;
+        // data.append(&mut buf.clone().to_vec());
+        // assert_eq!(total_bytes, data.len());
+        // while !dbg!(String::from_utf8(data.clone()))?.contains("\n") {
+        //     let mut buf = Vec::with_capacity(100);
+        //     total_bytes += stream.read(&mut buf)?;
+        //     data.append(&mut buf.clone().to_vec());
+        //     assert_eq!(total_bytes, data.len());
+        // }
         
-        let val = String::from_utf8(data.clone())?;
-        dbg!("INput str", val.clone());
-        let output = match Input::parse_bytes(data.clone()) {
+        // let val = String::from_utf8(data.clone())?;
+        // dbg!("INput str", val.clone());
+        let output = match Input::parse(inp_data) {
             Some(v) => {
-                dbg!("Valid Input", v.clone(), val.clone());
+                dbg!("Valid Input", v.clone()); //, val.clone());
                 Output::valid(is_prime(v.number))    
             },
             None => {
-                dbg!("InValid Input", val.clone());
+                dbg!("InValid Input"); //, val.clone());
                 break
             }
         };
@@ -106,7 +113,7 @@ fn main() -> anyhow::Result<()> {
 
     for stream in listener.incoming() {
         thread::spawn(|| -> anyhow::Result<()> {
-            dbg!(handle_client(&mut stream?))
+            dbg!(handle_client(stream?))
         });
     }
 
