@@ -1,6 +1,7 @@
 [workspace]
 
 members = [
-	"tcp_echo",
-	"prime_time"
+	"p0_tcp_echo",
+	"p1_prime_time",
+	"p2_means"
 ]
