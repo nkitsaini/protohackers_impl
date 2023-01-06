@@ -44,18 +44,20 @@ async fn listen_to_messages<'a>(
 ) -> anyhow::Result<()> {
     loop {
         let mut message = String::new();
-		dbg!("Waiting for message");
+        dbg!("Waiting for message");
         match reader.read_line(&mut message).await {
             Ok(count) => {
-				if count == 0 {
-					break
-				}
-				dbg!("got msg", &message);
-                event_tx.send(RoomEvents {
-                    user,
-                    ev_type: RoomEventType::Message(message.trim().to_string()),
-                }).ok();
-				dbg!("Sent message", user, message);
+                if count == 0 {
+                    break;
+                }
+                dbg!("got msg", &message);
+                event_tx
+                    .send(RoomEvents {
+                        user,
+                        ev_type: RoomEventType::Message(message.trim().to_string()),
+                    })
+                    .ok();
+                dbg!("Sent message", user, message);
                 // RoomEvents::Message(name.clone(), message.trim().to_string()))?;
             }
             Err(_) => break,
@@ -91,59 +93,64 @@ async fn inform_user<'a>(
 async fn handle_user(
     mut stream: tokio::net::TcpStream,
     room: Arc<tokio::sync::Mutex<Room>>,
-    event_tx: tokio::sync::broadcast::Sender<RoomEvents>
+    event_tx: tokio::sync::broadcast::Sender<RoomEvents>,
 ) -> anyhow::Result<()> {
     let (read_half, mut write_half) = stream.into_split();
     write_half
         .write("Hey what's your name\n".as_bytes())
         .await?;
-	
-	dbg!("Connection Recvd");
+
+    dbg!("Connection Recvd");
 
     let mut reader = tokio::io::BufReader::new(read_half);
     let mut name = String::new();
     reader.read_line(&mut name).await?;
     let name = name.trim().to_string();
-	if !is_valid_name(&name) {
-		write_half.write("This name is invalid booo!".to_string().as_bytes()).await.ok();
-		write_half.shutdown().await?;
-		return Ok(())
-	}
-	dbg!("Got name", &name);
+    if !is_valid_name(&name) {
+        write_half
+            .write("This name is invalid booo!".to_string().as_bytes())
+            .await
+            .ok();
+        write_half.shutdown().await?;
+        return Ok(());
+    }
+    dbg!("Got name", &name);
 
-	dbg!("Waiting mutex lock");
+    dbg!("Waiting mutex lock");
     let mut rm = room.lock().await;
-	dbg!("Got mutex lock");
+    dbg!("Got mutex lock");
     let users: Vec<String> = rm.users.values().cloned().collect();
     let user = rm.add_user(name.clone());
     drop(rm);
-	dbg!("Dropped mutex");
+    dbg!("Dropped mutex");
 
-    event_tx.send(RoomEvents {
-        user,
-        ev_type: RoomEventType::Joined,
-    }).ok();
-	dbg!("Created Join Event", &name);
+    event_tx
+        .send(RoomEvents {
+            user,
+            ev_type: RoomEventType::Joined,
+        })
+        .ok();
+    dbg!("Created Join Event", &name);
 
     let users_str = users.join(", ");
     let user_list = format!("* Current users: {users_str}\n");
 
-	dbg!("Sent users list", &user_list);
+    dbg!("Sent users list", &user_list);
 
     write_half.write(user_list.as_bytes()).await.ok(); // listen_to_messages will disconnect if this write fails
-	let rx = event_tx.subscribe();
+    let rx = event_tx.subscribe();
 
-	dbg!("Listening for events", user);
+    dbg!("Listening for events", user);
     tokio::select!(
         _ = inform_user(user, write_half, rx) => { },
         _ = listen_to_messages(user, reader, event_tx.clone()) => { }
     );
 
-	dbg!("Can't listen anymore", user);
+    dbg!("Can't listen anymore", user);
     let mut rm = room.lock().await;
     rm.remove_user(user.id);
     drop(rm);
-	dbg!("Removed user", user);
+    dbg!("Removed user", user);
 
     event_tx.send(RoomEvents {
         user,
@@ -159,15 +166,15 @@ async fn handle_user(
 }
 
 fn is_valid_name(name: &str) -> bool {
-	if name.len() == 0 {
-		return false;
-	}
-	for char in name.chars() {
-		if !char.is_alphanumeric() {
-			return false;
-		}
-	}
-	true
+    if name.len() == 0 {
+        return false;
+    }
+    for char in name.chars() {
+        if !char.is_alphanumeric() {
+            return false;
+        }
+    }
+    true
 }
 
 #[derive(Debug, Default)]
@@ -184,8 +191,7 @@ impl Room {
         return Box::leak(Box::new(user));
     }
     fn remove_user(&mut self, id: u64) {
-		self.users.remove(&id).unwrap();
-
+        self.users.remove(&id).unwrap();
     }
 }
 

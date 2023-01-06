@@ -3,6 +3,7 @@ mod p0_tcp;
 mod p1_prime;
 mod p2_means;
 mod p3_chat;
+mod p4_db;
 mod prelude;
 mod utils;
 
@@ -20,6 +21,7 @@ fn main() {
         1 => p1_prime::main,
         2 => p2_means::main,
         3 => p3_chat::main,
+        4 => p4_db::main,
         _ => unimplemented!(),
     };
     executor().unwrap();
