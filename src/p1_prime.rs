@@ -1,8 +1,4 @@
-use serde::{Serialize, Deserialize};
-use std::io::{prelude::*, BufReader};
-use std::ops::Add;
-use std::thread;
-use std::net::{TcpListener, TcpStream};
+use crate::prelude::*;
 
 const METHOD_NAME: &'static str = "isPrime";
 
@@ -108,7 +104,7 @@ fn handle_client(mut stream: TcpStream) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+pub fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3007")?;
 
     for stream in listener.incoming() {

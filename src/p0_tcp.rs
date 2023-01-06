@@ -11,7 +11,7 @@ fn handle_client(stream: &mut TcpStream) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn main() -> anyhow::Result<()> {
+pub fn main() -> anyhow::Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3007")?;
 
     for stream in listener.incoming() {
