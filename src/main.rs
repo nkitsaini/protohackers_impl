@@ -4,6 +4,7 @@ mod p1_prime;
 mod p2_means;
 mod p3_chat;
 mod p4_db;
+mod p5_middle;
 mod prelude;
 mod utils;
 
@@ -22,6 +23,7 @@ fn main() {
         2 => p2_means::main,
         3 => p3_chat::main,
         4 => p4_db::main,
+        5 => p5_middle::main,
         _ => unimplemented!(),
     };
     executor().unwrap();
