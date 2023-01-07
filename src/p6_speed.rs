@@ -14,7 +14,7 @@ type RoadId = u16;
 type Limit = u16;
 type Interval = u32;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct Ticket {
     plate: String,
     road: RoadId,
@@ -29,7 +29,7 @@ impl Ticket {
     pub const MESSAGE_NO: u8 = 0x21;
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum Message {
     // Server -> Client
     Error {
@@ -89,7 +89,24 @@ impl Message {
                     roads.push(reader.read_u16().await?);
                 }
                 Self::IAmDispatcher { roads }
-            }
+            },
+            // For testing
+            // Ticket::MESSAGE_NO => {
+                
+            //     Self::Ticket(Ticket {
+            //         plate: Self::read_str(reader).await?,
+            //         road: reader.read_u16().await?,
+            //         mile1: reader.read_u16().await?,
+            //         timestamp1: reader.read_u32().await?,
+            //         mile2: reader.read_u16().await?,
+            //         timestamp2: reader.read_u32().await?,
+            //         speed: reader.read_u16().await?,
+            //     })
+            // },
+            // 0x10 => {
+            //     Self::Error { msg: Self::read_str(reader).await? }
+            // }
+
             _ => bail!("Unknown Message type"),
         })
     }
@@ -216,27 +233,27 @@ impl RunningCar {
                 let first_day = data1.0 / (3600*24);
                 let last_day = data2.0 / (3600*24);
                 if  (first_day..(last_day+1)).any(|x| self.days_charged.contains(&x)) {
-                    continue // Already ticketed
+                    continue // Already ticketed for the day
                 }
 
-                for day in (first_day..(last_day+1)) {
-                    self.days_charged.insert(day);
-                }
                 // {
                 //     if self.days_charged.contains(&day) {
                 //         continue
                 //     }
                 // }
                 if avg_speed > road_limit as f64 {
-                        tickets.push(Ticket {
-                            plate: self.plate.clone(),
-                            road: road,
-                            mile1: data1.1,
-                            timestamp1: data1.0,
-                            mile2: data2.1,
-                            timestamp2: data2.0,
-                            speed: avg_speed_100 as u16,
-                        });
+                    for day in first_day..(last_day+1) {
+                        self.days_charged.insert(day);
+                    }
+                    tickets.push(Ticket {
+                        plate: self.plate.clone(),
+                        road: road,
+                        mile1: data1.1,
+                        timestamp1: data1.0,
+                        mile2: data2.1,
+                        timestamp2: data2.0,
+                        speed: avg_speed_100 as u16,
+                    });
                 }
 
             }
@@ -311,7 +328,7 @@ impl Client {
         // let mut reader = tokio::io::BufReader::new(self.read_half);
         match self._run(state).await {
             Err(x) => {
-				// dbg!(x);
+				dbg!(x);
                 self.write_half
                     .write(
                         &Message::Error {
@@ -425,9 +442,9 @@ impl Client {
                 match writer.write_all(&ev.clone().serialize()).await {
                     Result::Ok(_) => {},
                     Err(x) => {
-                        if let Some(q) = revert_q {
-                            q.try_send(ev).unwrap();
-                        }
+                        // if let Some(q) = revert_q {
+                        //     q.try_send(ev).unwrap();
+                        // }
                         bail!(x);
                     }
                 };
@@ -592,28 +609,9 @@ mod tests {
 		let mut camera1 = tokio::net::TcpStream::connect(socket_addr).await?;
 		let mut camera2 = tokio::net::TcpStream::connect(socket_addr).await?;
 		let mut dispatcher1 = tokio::net::TcpStream::connect(socket_addr).await?;
-		// 
-		// Hexadecimal:
-		// <-- 80 00 7b 00 08 00 3c
-		// <-- 20 04 55 4e 31 58 00 00 00 00
-		// 
-		// Decoded:
-		// <-- IAmCamera{road: 123, mile: 8, limit: 60}
-		// <-- Plate{plate: "UN1X", timestamp: 0}
+
 		camera1.write(&Message::IAmCamera { road: 123, mile: 8, limit: 60 }.serialize()).await?;
 		camera1.write(&Message::Plate { plate: "UN1X".into(), timestamp: 0}.serialize()).await?;
-
-		// 
-		// Client 2: camera at mile 9
-		// 
-		// Hexadecimal:
-		// <-- 80 00 7b 00 09 00 3c
-		// <-- 20 04 55 4e 31 58 00 00 00 2d
-		// 
-		// Decoded:
-		// <-- IAmCamera{road: 123, mile: 9, limit: 60}
-		// <-- Plate{plate: "UN1X", timestamp: 45}
-		// 
 
 		dispatcher1.write(&Message::IAmDispatcher { roads: vec![123] }.serialize()).await?;
 		tokio::time::sleep(Duration::from_millis(500)).await;
@@ -622,26 +620,15 @@ mod tests {
 		camera2.write(&Message::Plate { plate: "UN1X".into(), timestamp: 45}.serialize()).await?;
 
 
-
-		// tokio::time::sleep(Duration::from_millis(30000)).await;
-		// Client 3: ticket dispatcher
-		// 
-		// Hexadecimal:
-		// <-- 81 01 00 7b
-		// --> 21 04 55 4e 31 58 00 7b 00 08 00 00 00 00 00 09 00 00 00 2d 1f 40
-		// 
-		// Decoded:
-		// <-- IAmDispatcher{roads: [123]}
-		// --> Ticket{plate: "UN1X", road: 123, mile1: 8, timestamp1: 0, mile2: 9, timestamp2: 45, speed: 8000}
-
-		let mut v = vec![0u8; 22];
+        let ticket = Ticket{plate: "UN1X".into(), road: 123, mile1: 8, timestamp1: 0, mile2: 9, timestamp2: 45, speed: 8000};
 		dbg!("Reading");
+        let (read_half, _write_half) = dispatcher1.into_split();
+        let mut disp1_reader = tokio::io::BufReader::new(read_half);
 		select! {
-			_ = dispatcher1.read_exact(&mut v) => {
-                dbg!(String::from_utf8_lossy(&v));
+			l = Message::parse_next(&mut disp1_reader) => {
 				assert_eq!(
-					&v, 
-					&hex::decode("21 04 55 4e 31 58 00 7b 00 08 00 00 00 00 00 09 00 00 00 2d 1f 40".replace(" ", "")).unwrap()
+					l?, 
+					Message::Ticket(ticket)
 				);
 			},
 			_ = tokio::time::sleep(Duration::from_secs(1)) => {
@@ -650,6 +637,91 @@ mod tests {
 		}
 
 		// assert!(false);
+		Ok(())
+
+	}
+
+	#[tokio::test]
+	async fn test_p6_failure() -> anyhow::Result<()> {
+        let port_no = 3010;
+        let road: RoadId = 1;
+        let limit: Limit = 90;
+        let plate: String = "UN".into();
+		tokio::spawn(run(port_no));
+		tokio::time::sleep(Duration::from_millis(5)).await; // Let the server start
+
+        let socket_addr:SocketAddr = format!("0.0.0.0:{port_no}").parse().unwrap();
+		let mut camera1 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut camera2 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut camera3 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut camera4 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut camera5 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut dispatcher1 = tokio::net::TcpStream::connect(socket_addr).await?;
+
+		camera1.write(&Message::IAmCamera { road, mile: 68, limit }.serialize()).await?;
+		camera1.write(&Message::Plate { plate: plate.clone(), timestamp: 44851675}.serialize()).await?;
+
+		camera2.write(&Message::IAmCamera { road, mile: 194, limit }.serialize()).await?;
+		camera2.write(&Message::Plate { plate: plate.clone(), timestamp: 44846713}.serialize()).await?;
+
+		camera3.write(&Message::IAmCamera { road, mile: 5, limit }.serialize()).await?;
+		camera3.write(&Message::Plate { plate: plate.clone(), timestamp: 44854156}.serialize()).await?;
+
+		camera4.write(&Message::IAmCamera { road, mile: 398, limit }.serialize()).await?;
+		camera4.write(&Message::Plate { plate: plate.clone(), timestamp: 44838681}.serialize()).await?;
+
+		camera5.write(&Message::IAmCamera { road, mile: 596, limit }.serialize()).await?;
+		camera5.write(&Message::Plate { plate: plate.clone(), timestamp: 44830884}.serialize()).await?;
+
+		dispatcher1.write(&Message::IAmDispatcher { roads: vec![road] }.serialize()).await?;
+		// tokio::time::sleep(Duration::from_millis(500)).await;
+
+		// camera2.write(&Message::IAmCamera { road: 123, mile: 9, limit: 60 }.serialize()).await?;
+		// camera2.write(&Message::Plate { plate: "UN1X".into(), timestamp: 45}.serialize()).await?;
+
+
+        let ticket = Ticket{plate: "UN1X".into(), road: 123, mile1: 8, timestamp1: 0, mile2: 9, timestamp2: 45, speed: 8000};
+		dbg!("Reading");
+        let (read_half, _write_half) = dispatcher1.into_split();
+        let mut disp1_reader = tokio::io::BufReader::new(read_half);
+		select! {
+			l = Message::parse_next(&mut disp1_reader) => {
+                dbg!(l?);
+				// assert_eq!(
+				// 	l?, 
+				// 	Message::Ticket(ticket)
+				// );
+			},
+			_ = tokio::time::sleep(Duration::from_secs(1)) => {
+				bail!("Took too long to read")
+			}
+		}
+		select! {
+			l = Message::parse_next(&mut disp1_reader) => {
+                dbg!(l?);
+				// assert_eq!(
+				// 	l?, 
+				// 	Message::Ticket(ticket)
+				// );
+			},
+			_ = tokio::time::sleep(Duration::from_secs(1)) => {
+				bail!("Took too long to read")
+			}
+		}
+		select! {
+			l = Message::parse_next(&mut disp1_reader) => {
+                dbg!(l?);
+				// assert_eq!(
+				// 	l?, 
+				// 	Message::Ticket(ticket)
+				// );
+			},
+			_ = tokio::time::sleep(Duration::from_secs(1)) => {
+				bail!("Took too long to read")
+			}
+		}
+
+		assert!(false);
 		Ok(())
 
 	}
