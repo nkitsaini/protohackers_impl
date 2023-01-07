@@ -2,6 +2,7 @@ use std::{net::{SocketAddr, ToSocketAddrs}, ops::Bound};
 
 use anyhow::{bail, Ok};
 use once_cell::sync::Lazy;
+use parking_lot::lock_api::RawRwLockDowngrade;
 
 use crate::prelude::*;
 
@@ -136,22 +137,35 @@ impl Message {
             }
             Self::HeartBeat => {
                 rv.push(0x41);
-            }
+            },
+            // For testing
+            Self::IAmCamera { road, mile, limit } => {
+                rv.push(0x80);
+                rv.append(&mut road.to_be_bytes().to_vec());
+                rv.append(&mut mile.to_be_bytes().to_vec());
+                rv.append(&mut limit.to_be_bytes().to_vec());
+
+            },
+            Self::Plate { plate, timestamp } => {
+                rv.push(0x20);
+                rv.append(&mut Self::serialize_str(plate));
+                rv.append(&mut timestamp.to_be_bytes().to_vec());
+
+            },
+            Self::IAmDispatcher { roads } => {
+                rv.push(0x81);
+                rv.push(roads.len() as u8);
+                for road in roads {
+                    rv.append(&mut road.to_be_bytes().to_vec());
+                }
+            },
+
             _ => unreachable!(),
         }
         rv
     }
 }
 
-// struct MessageParser { }
-// impl MessageParser {
-// 	async fn parse_msg(val: &mut tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>) -> anyhow::Result<Message> {
-// 		loop {
-// 			yield Message::parse_next(val).await;
-// 		}
-
-// 	}
-// }
 
 #[derive(Debug, Clone)]
 enum ClientType {
@@ -163,7 +177,7 @@ enum ClientType {
 struct RunningCar {
     history: HashMap<RoadId, BTreeMap<Timestamp, Mile>>,
     plate: String,
-	days_charged: HashSet<u64>
+	days_charged: HashSet<u32>
 }
 
 impl RunningCar {
@@ -186,6 +200,7 @@ impl RunningCar {
         road_history.insert(ts, mile);
 		let prev = road_history.range(..ts).next_back();
 		let next = road_history.range((Bound::Excluded(ts), Bound::Unbounded)).next_back();
+        let mut tickets = vec![];
         for val in vec![prev, next] {
             if let Some(b_data) = val {
                 let mut data2 = (*b_data.0, *b_data.1);
@@ -194,8 +209,35 @@ impl RunningCar {
                 if data1.0 > data2.0 {
                     (data1, data2) = (data2, data1);
                 }
-                // let avg_speed = 
-                todo!()
+                assert!(data1.0 != data2.0);
+                let avg_speed = data1.1.abs_diff(data2.1) as f64 / ((data2.0 - data1.0) as f64 / 3600.);
+                let avg_speed_100 = (avg_speed * 100 as f64).floor();
+                // dbg!(avg_speed, road_limit);
+                let first_day = data1.0 / (3600*24);
+                let last_day = data2.0 / (3600*24);
+                if  (first_day..(last_day+1)).any(|x| self.days_charged.contains(&x)) {
+                    continue // Already ticketed
+                }
+
+                for day in (first_day..(last_day+1)) {
+                    self.days_charged.insert(day);
+                }
+                // {
+                //     if self.days_charged.contains(&day) {
+                //         continue
+                //     }
+                // }
+                if avg_speed > road_limit as f64 {
+                        tickets.push(Ticket {
+                            plate: self.plate.clone(),
+                            road: road,
+                            mile1: data1.1,
+                            timestamp1: data1.0,
+                            mile2: data2.1,
+                            timestamp2: data2.0,
+                            speed: avg_speed_100 as u16,
+                        });
+                }
 
             }
         }
@@ -204,70 +246,52 @@ impl RunningCar {
         // See immediate previous `ts`, and immediate next `ts`
         // Assume no duplicate ts for single car
         // todo!()
-		let t  = Ticket{plate: "UN1X".to_string(), road: 123, mile1: 8, timestamp1: 0, mile2: 9, timestamp2: 45, speed: 8000};
-		dbg!("Created Ticket", &road_history);
+        tickets
+		// let t  = Ticket{plate: "UN1X".to_string(), road: 123, mile1: 8, timestamp1: 0, mile2: 9, timestamp2: 45, speed: 8000};
+		// dbg!("Created Ticket", &road_history);
 
-		vec![]
+		// vec![t]
     }
 }
 
 #[derive(Debug, Default)]
 struct State {
     cars: HashMap<CarId, RunningCar>,
-    dispatchers: HashMap<RoadId, Vec<tokio::sync::mpsc::Sender<Message>>>,
-    unsend_tickets: HashMap<RoadId, Vec<Ticket>>
+    ticket_queues: HashMap<RoadId, (async_channel::Sender<Message>, async_channel::Receiver<Message>)>
 }
+
 
 impl State {
-	pub async fn add_dispatcher(&mut self, roads: Vec<RoadId>, tx: tokio::sync::mpsc::Sender<Message>) {
-		for road in roads.iter() {
-			self.dispatchers.entry(*road).or_default().push(tx.clone());
+    pub async fn new() {
+        let (s, r) = async_channel::unbounded::<Message>();
+        let k =  s.clone();
+    }
 
-            let ticket_vec = self.unsend_tickets.entry(*road).or_default();
-            for ticket_i in (0..ticket_vec.len()).rev() {
-                let a= ticket_vec.get_mut(ticket_i).unwrap();
-                tx.send(Message::Ticket(a.clone())).await;
-            }
-		}
-	}
+    pub fn road_queues(&mut self, road_id: RoadId) -> (async_channel::Sender<Message>, async_channel::Receiver<Message>) {
+        let et = self.ticket_queues.entry(road_id).or_insert_with(|| {
+            async_channel::unbounded::<Message>()
+        });
+        et.clone()
+    }
 
 	pub async fn new_entry(&mut self, road: RoadId, mile: Mile, ts: Timestamp, road_limit: Limit, plate: CarId) {
-		let tickets = self.cars.entry(plate).or_default().new_entry(road, mile, ts, road_limit);
-		for ticket in tickets {
-			self.send_ticket(ticket).await;
-		}
-		dbg!("Done with ticket");
-	}
-
-	pub async fn send_ticket(&mut self, ticket: Ticket) {
-		let mut new_i = None;
-		for (i, disp) in self.dispatchers.entry(ticket.road).or_default().iter().enumerate() {
-			if disp.send(Message::Ticket(ticket.clone())).await.is_ok() {
-				new_i = Some(i);
-				break
-			}
-		}
-		match new_i {
-			Some(i) => {
-				dbg!("Cleaning dispatchers", i);
-				let disps = self.dispatchers.entry(ticket.road).or_default();
-				*disps = disps.split_at(i).1.to_vec();
-
-			},
-			None => {
-				dbg!("No dispatcher");
-				self.dispatchers.entry(ticket.road).or_default().clear();
-			}
-		}
+		let tickets = self.cars.entry(plate).or_insert_with_key(|plate| RunningCar::new(plate.clone())).new_entry(road, mile, ts, road_limit);
+        for ticket in tickets {
+            // dbg!("Creating ticket", &ticket);
+            let (w, _) = self.road_queues(road);
+            w.try_send(Message::Ticket(ticket)).unwrap();
+            // dbg!(w.len(), w.receiver_count(), w.sender_count());
+        }
 	}
 }
 
+#[derive(Debug)]
 struct Client {
     client_type: Option<ClientType>,
     reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     write_half: tokio::net::tcp::OwnedWriteHalf,
-    events_rx: tokio::sync::mpsc::Receiver<Message>,
-    events_tx: tokio::sync::mpsc::Sender<Message>,
+    events_rx: tokio::sync::mpsc::Receiver<(Message, Option<async_channel::Sender<Message>>)>,
+    events_tx: tokio::sync::mpsc::Sender<(Message, Option<async_channel::Sender<Message>>)>,
 }
 
 impl Client {
@@ -282,18 +306,18 @@ impl Client {
 			events_rx
 		}
 	}
+
     async fn run(mut self, state: Arc<tokio::sync::Mutex<State>>) -> anyhow::Result<()> {
         // let mut reader = tokio::io::BufReader::new(self.read_half);
         match self._run(state).await {
             Err(x) => {
-				dbg!(x);
+				// dbg!(x);
                 self.write_half
                     .write(
                         &Message::Error {
                             msg: "Something went wrong".to_string(),
                         }
                         .serialize()
-                        .await,
                     )
                     .await?
             }
@@ -312,20 +336,23 @@ impl Client {
             let ev_tx1 = ev_tx1;
             loop {
                 let message = Message::parse_next(reader).await?;
-                match dbg!(message) {
+                dbg!(&message, &client);
+                match message {
                     Message::WantHeartBeat { interval } => {
                         match heartbeat_task {
                             Some(_) => bail!("Two heartbeat req"),
                             None => {
                                 let ev_tx_int = ev_tx1.clone();
                                 heartbeat_task = Some(tokio::spawn(async move {
+                                    let my_interval = if interval == 0 {100} else {interval};
                                     let mut tick_interval = tokio::time::interval(
-                                        Duration::from_micros(interval as u64 * 100),
+                                        Duration::from_millis(my_interval as u64 * 100),
                                     );
                                     loop {
                                         tick_interval.tick().await;
 										if interval != 0 {
-											ev_tx_int.send(Message::HeartBeat).await?;
+                                            // dbg!("Sending heartbeat");
+											ev_tx_int.send((Message::HeartBeat, None)).await?;
 										} else {
 											// No heartbeats if interval=0
 											tokio::time::sleep(Duration::from_secs(10000)).await;
@@ -360,8 +387,24 @@ impl Client {
 						match client {
 							None => {
 								*client = Some(ClientType::Dispatcher(roads.clone()));
-								let ev_tx_state = ev_tx2.clone();
-								state.lock().await.add_dispatcher(roads, ev_tx_state).await;
+								for road in roads {
+                                    let ev_tx_c = ev_tx1.clone();
+                                    let state_c = state.clone();
+                                    tokio::spawn(async move {
+                                        let (t, r) = state_c.lock().await.road_queues(road);
+                                        loop {
+                                            let m = r.recv().await.unwrap();
+                                            match ev_tx_c.send((m.clone(), Some(t.clone()))).await {
+                                                Err(x) => {
+                                                    t.try_send(m).unwrap();
+                                                    bail!(x);
+                                                },
+                                                Result::Ok(_) => {}
+                                            };
+                                        }
+                                        Ok(())
+                                    });
+                                }
 							},
 							Some(_) => {
 								bail!("Already declared type");
@@ -378,14 +421,39 @@ impl Client {
         let writer = &mut self.write_half;
         let task2 = || async move {
             loop {
-                let ev = event_mut.recv().await.context("closed")?;
-                writer.write(&dbg!(ev).serialize().await).await?;
+                let (ev, revert_q) = event_mut.recv().await.context("closed")?;
+                match writer.write_all(&ev.clone().serialize()).await {
+                    Result::Ok(_) => {},
+                    Err(x) => {
+                        if let Some(q) = revert_q {
+                            q.try_send(ev).unwrap();
+                        }
+                        bail!(x);
+                    }
+                };
             }
             Ok(())
         };
+        // self.events_tx.closed()
         select! {
-            x = task1() => { x? },
-            y = task2() => { y? }
+            x = task1() => { 
+                while let Result::Ok((ev, revert_q)) = self.events_rx.try_recv() {
+                    if let Some(q) = revert_q {
+                        q.try_send(ev).unwrap();
+                    }
+                }
+                
+                x?
+             },
+            y = task2() => {
+                while let Result::Ok((ev, revert_q)) = self.events_rx.try_recv() {
+                    if let Some(q) = revert_q {
+                        q.try_send(ev).unwrap();
+                    }
+                }
+  
+                y?
+            }
         }
 
         Ok(())
@@ -398,16 +466,35 @@ async fn handle_client(stream: tokio::net::TcpStream, state: Arc<tokio::sync::Mu
     Ok(())
 }
 
-async fn run() -> anyhow::Result<()> {
+async fn run(port_no: u16) -> anyhow::Result<()> {
 	dbg!("Starting listener");
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3009").await?;
+    let listener = tokio::net::TcpListener::bind(format!("0.0.0.0:{port_no}")).await?;
 	dbg!("Started listener");
 	let state = Arc::new(tokio::sync::Mutex::new(State::default()));
+
+
+    let state_c = state.clone();
+    tokio::spawn(async move {
+        let mut interval = tokio::time::interval(Duration::from_secs(5));
+        // let mut interval = tokio::time::interval(Duration::from_millis(500));
+        loop {
+            interval.tick().await;
+            let mut total_messages = 0;
+            for v in state_c.lock().await.ticket_queues.values() {
+                total_messages += v.0.len();
+            }
+            dbg!("Messages active", total_messages);
+        }
+    });
 
     loop {
         let (stream, _) = listener.accept().await?;
 		let st2 = state.clone();
-        tokio::task::spawn(async move { dbg!(handle_client(stream, st2).await) });
+        tokio::task::spawn(async move { match handle_client(stream, st2).await {
+            Err(x) => {dbg!("Client disconnected", x);},
+
+            Result::Ok(_) => {}
+        } });
     }
 }
 
@@ -416,7 +503,7 @@ pub fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async { run().await })
+        .block_on(async { run(3008).await })
 }
 
 #[cfg(test)]
@@ -424,12 +511,14 @@ mod tests {
     use super::*;
 	#[tokio::test]
 	async fn test_p6_flow() -> anyhow::Result<()> {
-		tokio::spawn(run());
-		tokio::time::sleep(Duration::from_micros(5)).await; // Let the server start
+        let PORT_NO = 3008;
+		tokio::spawn(run(PORT_NO));
+		tokio::time::sleep(Duration::from_millis(5)).await; // Let the server start
 
-		let mut camera1 = tokio::net::TcpStream::connect("0.0.0.0:3009".parse::<SocketAddr>().unwrap()).await?;
-		let mut camera2 = tokio::net::TcpStream::connect("0.0.0.0:3009".parse::<SocketAddr>().unwrap()).await?;
-		let mut dispatcher1 = tokio::net::TcpStream::connect("0.0.0.0:3009".parse::<SocketAddr>().unwrap()).await?;
+        let socket_addr:SocketAddr = format!("0.0.0.0:{PORT_NO}").parse().unwrap();
+		let mut camera1 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut camera2 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut dispatcher1 = tokio::net::TcpStream::connect(socket_addr).await?;
 		// 
 		// Hexadecimal:
 		// <-- 80 00 7b 00 08 00 3c
@@ -452,14 +541,17 @@ mod tests {
 		// <-- IAmCamera{road: 123, mile: 9, limit: 60}
 		// <-- Plate{plate: "UN1X", timestamp: 45}
 		// 
-		dispatcher1.write(&hex::decode("81 01 00 7b".replace(" ", "")).unwrap()).await?;
-		tokio::time::sleep(Duration::from_micros(5)).await; // let dispatcher register to capture ticket
 
+		dispatcher1.write(&hex::decode("81 01 00 7b".replace(" ", "")).unwrap()).await?;
+		tokio::time::sleep(Duration::from_millis(500)).await;
+        // dispatcher1.shutdown().await;
 
 		camera2.write(&hex::decode("80 00 7b 00 09 00 3c".replace(" ", "")).unwrap()).await?;
 		camera2.write(&hex::decode("20 04 55 4e 31 58 00 00 00 2d".replace(" ", "")).unwrap()).await?;
 
-		// tokio::time::sleep(Duration::from_micros(500)).await;
+
+
+		// tokio::time::sleep(Duration::from_millis(30000)).await;
 		// Client 3: ticket dispatcher
 		// 
 		// Hexadecimal:
@@ -474,6 +566,79 @@ mod tests {
 		dbg!("Reading");
 		select! {
 			_ = dispatcher1.read_exact(&mut v) => {
+                dbg!(String::from_utf8_lossy(&v));
+				assert_eq!(
+					&v, 
+					&hex::decode("21 04 55 4e 31 58 00 7b 00 08 00 00 00 00 00 09 00 00 00 2d 1f 40".replace(" ", "")).unwrap()
+				);
+			},
+			_ = tokio::time::sleep(Duration::from_secs(1)) => {
+				bail!("Took too long to read")
+			}
+		}
+
+		// assert!(false);
+		Ok(())
+
+	}
+
+	#[tokio::test]
+	async fn test_p6_flow_custom() -> anyhow::Result<()> {
+        let port_no = 3009;
+		tokio::spawn(run(port_no));
+		tokio::time::sleep(Duration::from_millis(5)).await; // Let the server start
+
+        let socket_addr:SocketAddr = format!("0.0.0.0:{port_no}").parse().unwrap();
+		let mut camera1 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut camera2 = tokio::net::TcpStream::connect(socket_addr).await?;
+		let mut dispatcher1 = tokio::net::TcpStream::connect(socket_addr).await?;
+		// 
+		// Hexadecimal:
+		// <-- 80 00 7b 00 08 00 3c
+		// <-- 20 04 55 4e 31 58 00 00 00 00
+		// 
+		// Decoded:
+		// <-- IAmCamera{road: 123, mile: 8, limit: 60}
+		// <-- Plate{plate: "UN1X", timestamp: 0}
+		camera1.write(&Message::IAmCamera { road: 123, mile: 8, limit: 60 }.serialize()).await?;
+		camera1.write(&Message::Plate { plate: "UN1X".into(), timestamp: 0}.serialize()).await?;
+
+		// 
+		// Client 2: camera at mile 9
+		// 
+		// Hexadecimal:
+		// <-- 80 00 7b 00 09 00 3c
+		// <-- 20 04 55 4e 31 58 00 00 00 2d
+		// 
+		// Decoded:
+		// <-- IAmCamera{road: 123, mile: 9, limit: 60}
+		// <-- Plate{plate: "UN1X", timestamp: 45}
+		// 
+
+		dispatcher1.write(&Message::IAmDispatcher { roads: vec![123] }.serialize()).await?;
+		tokio::time::sleep(Duration::from_millis(500)).await;
+
+		camera2.write(&Message::IAmCamera { road: 123, mile: 9, limit: 60 }.serialize()).await?;
+		camera2.write(&Message::Plate { plate: "UN1X".into(), timestamp: 45}.serialize()).await?;
+
+
+
+		// tokio::time::sleep(Duration::from_millis(30000)).await;
+		// Client 3: ticket dispatcher
+		// 
+		// Hexadecimal:
+		// <-- 81 01 00 7b
+		// --> 21 04 55 4e 31 58 00 7b 00 08 00 00 00 00 00 09 00 00 00 2d 1f 40
+		// 
+		// Decoded:
+		// <-- IAmDispatcher{roads: [123]}
+		// --> Ticket{plate: "UN1X", road: 123, mile1: 8, timestamp1: 0, mile2: 9, timestamp2: 45, speed: 8000}
+
+		let mut v = vec![0u8; 22];
+		dbg!("Reading");
+		select! {
+			_ = dispatcher1.read_exact(&mut v) => {
+                dbg!(String::from_utf8_lossy(&v));
 				assert_eq!(
 					&v, 
 					&hex::decode("21 04 55 4e 31 58 00 7b 00 08 00 00 00 00 00 09 00 00 00 2d 1f 40".replace(" ", "")).unwrap()
