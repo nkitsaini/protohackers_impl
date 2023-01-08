@@ -543,7 +543,7 @@ pub fn main() -> anyhow::Result<()> {
         .enable_all()
         .build()
         .unwrap()
-        .block_on(async { run(3008).await })
+        .block_on(async { run(3007).await })
 }
 
 #[cfg(test)]

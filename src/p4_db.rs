@@ -3,20 +3,9 @@ use std::ops::Index;
 use crate::prelude::*;
 use tokio::net::UdpSocket;
 
-// #[tokio::main]
-// async fn main() -> io::Result<()> {
-//     let sock = UdpSocket::bind("0.0.0.0:8080").await?;
-//     let mut buf = [0; 1024];
-//     loop {
-//         let (len, addr) = sock.recv_from(&mut buf).await?;
-//         println!("{:?} bytes received from {:?}", len, addr);
-
-//         let len = sock.send_to(&buf[..len], addr).await?;
-//         println!("{:?} bytes sent", len);
-//     }
-// }
 
 // TODO: search why utf-8 is backwards compatible when ascii uses complete u8 space
+// Answer: Because 256 != 128. Ascii is 7-bit(lucky for utf-8 creators). I always miss 128 in 2's powers.
 // but utf-8 can contain more information
 type Key = String;
 type Value = String;
