@@ -1,3 +1,4 @@
+#![feature(never_type)]
 use clap::Parser;
 mod p0_tcp;
 mod p1_prime;
@@ -6,6 +7,7 @@ mod p3_chat;
 mod p4_db;
 mod p5_middle;
 mod p6_speed;
+mod p7_reversal;
 mod prelude;
 mod utils;
 
@@ -26,6 +28,7 @@ fn main() {
         4 => p4_db::main,
         5 => p5_middle::main,
         6 => p6_speed::main,
+        7 => p7_reversal::main,
         _ => unimplemented!(),
     };
     executor().unwrap();
