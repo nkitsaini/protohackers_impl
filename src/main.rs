@@ -8,6 +8,7 @@ mod p4_db;
 mod p5_middle;
 mod p6_speed;
 // mod p7_reversal;
+mod p8_insecure;
 mod p9_jobqueue;
 mod prelude;
 mod utils;
@@ -30,6 +31,7 @@ fn main() {
         5 => p5_middle::main,
         6 => p6_speed::main,
         // 7 => p7_reversal::main,
+        8 => p8_insecure::main,
         9 => p9_jobqueue::main,
         _ => unimplemented!(),
     };

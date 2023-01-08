@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, BTreeSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     sync::Arc,
 };
 
@@ -7,7 +7,10 @@ use anyhow::Context;
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use tokio::{io::{AsyncBufReadExt, AsyncWriteExt}, select};
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt},
+    select,
+};
 
 type Job = serde_json::Value;
 type QueueId = String; // text
@@ -28,7 +31,7 @@ enum GetResponseType {
 #[derive(Debug)]
 enum Response {
     PutResponse { id: JobId },
-    GetResponse( GetResponseType ),
+    GetResponse(GetResponseType),
     AbortResponse { no_job: bool },
     DeleteResponse { no_job: bool },
     Error { msg: String },
@@ -91,8 +94,8 @@ impl Response {
                     "status": "ok",
                     "id": id
                 })
-            },
-            Response::Error { msg }  => {
+            }
+            Response::Error { msg } => {
                 json!({
                     "status": "error",
                     "error": msg
@@ -178,7 +181,7 @@ impl Queue {
     fn abort_active_job(&mut self, job_id: JobId, client: ClientId) -> anyhow::Result<bool> {
         if let Some(client_id) = self.active_jobs.get(&job_id) {
             if *client_id != client {
-				// dbg!("Removing Client: Misbehaving", client);
+                // dbg!("Removing Client: Misbehaving", client);
                 anyhow::bail!("Not the same client")
             }
 
@@ -193,16 +196,16 @@ impl Queue {
     }
 
     fn delete_active_id(&mut self, job_id: JobId) -> bool {
-		if let Some(job) = self.jobs.get(&job_id) {
-			let ac_rem = self.active_jobs.remove(&job_id);
-			if ac_rem.is_none() {
-				self.priorities.remove(&(job.priority, job.id)).is_none()
-			} else {
-				false
-			}
-		} else {
-			true
-		}
+        if let Some(job) = self.jobs.get(&job_id) {
+            let ac_rem = self.active_jobs.remove(&job_id);
+            if ac_rem.is_none() {
+                self.priorities.remove(&(job.priority, job.id)).is_none()
+            } else {
+                false
+            }
+        } else {
+            true
+        }
     }
 }
 
@@ -211,40 +214,61 @@ type WaiterId = u64;
 #[derive(Default)]
 struct WaitingSystem {
     waiters: HashMap<QueueId, BTreeSet<WaiterId>>,
-    waiters_to_queue: HashMap<WaiterId, (Vec<QueueId>, tokio::sync::oneshot::Sender<Response>, ClientId)>,
+    waiters_to_queue: HashMap<
+        WaiterId,
+        (
+            Vec<QueueId>,
+            tokio::sync::oneshot::Sender<Response>,
+            ClientId,
+        ),
+    >,
     last_waiter_id: u64,
 }
 
 impl WaitingSystem {
-    fn wait(&mut self, queues: Vec<QueueId>, client_id: ClientId) -> tokio::sync::oneshot::Receiver<Response> {
-		let (ts, rs) = tokio::sync::oneshot::channel();
-		let waiter_id = self.last_waiter_id + 1;
-		for queue in queues.iter() {
-			self.waiters.entry(queue.clone()).or_default().insert(waiter_id);
-		}
-		self.waiters_to_queue.insert(waiter_id, (queues, ts, client_id));
-		self.last_waiter_id = waiter_id;
-		rs
+    fn wait(
+        &mut self,
+        queues: Vec<QueueId>,
+        client_id: ClientId,
+    ) -> tokio::sync::oneshot::Receiver<Response> {
+        let (ts, rs) = tokio::sync::oneshot::channel();
+        let waiter_id = self.last_waiter_id + 1;
+        for queue in queues.iter() {
+            self.waiters
+                .entry(queue.clone())
+                .or_default()
+                .insert(waiter_id);
+        }
+        self.waiters_to_queue
+            .insert(waiter_id, (queues, ts, client_id));
+        self.last_waiter_id = waiter_id;
+        rs
     }
-	fn queue_update(&mut self, queue_name: QueueId, queue: &mut Queue) {
-		let waiters = self.waiters.entry(queue_name.clone()).or_default();
-		let job = match queue.get_best_job() {
-			Some(x) => x,
-			None => return
-		};
-		let waiter_id = match waiters.pop_first() {
-			Some(x) => x,
-			None => return
-		};
-		let (waiter_queues, waiter_ts, client_id) = self.waiters_to_queue.remove(&waiter_id).unwrap();
-		for oq in waiter_queues {
-			self.waiters.entry(oq).or_default().remove(&waiter_id);
-		}
-		queue.move_job_to_active(job.clone(), client_id);
-		waiter_ts.send(Response::GetResponse(
-			GetResponseType::Ok { id: job.id, job: job.job, pri: job.priority, queue: queue_name }
-		)).unwrap();
-	}
+    fn queue_update(&mut self, queue_name: QueueId, queue: &mut Queue) {
+        let waiters = self.waiters.entry(queue_name.clone()).or_default();
+        let job = match queue.get_best_job() {
+            Some(x) => x,
+            None => return,
+        };
+        let waiter_id = match waiters.pop_first() {
+            Some(x) => x,
+            None => return,
+        };
+        let (waiter_queues, waiter_ts, client_id) =
+            self.waiters_to_queue.remove(&waiter_id).unwrap();
+        for oq in waiter_queues {
+            self.waiters.entry(oq).or_default().remove(&waiter_id);
+        }
+        queue.move_job_to_active(job.clone(), client_id);
+        waiter_ts
+            .send(Response::GetResponse(GetResponseType::Ok {
+                id: job.id,
+                job: job.job,
+                pri: job.priority,
+                queue: queue_name,
+            }))
+            .unwrap();
+    }
 }
 
 struct Storage {
@@ -265,24 +289,24 @@ impl Storage {
                 self.msg_queues.push(queue.clone());
                 let q = self.queues.entry(queue.clone()).or_default();
                 q.add_new_job(queue.clone(), job, pri, job_id);
-				self.waiting_system.queue_update(queue.clone(), q);
+                self.waiting_system.queue_update(queue.clone(), q);
                 Response::PutResponse { id: job_id }
             }
 
             // wait -> todo
             Request::Get(GetReq { queues, wait }) => {
                 let mut best_job = None;
-                    for queue_name in queues.clone() {
-                        if let Some(queue) = self.queues.get(&queue_name) {
-                            if let Some(job) = queue.get_best_job() {
-                                let mut jb = best_job.unwrap_or(job.clone());
-                                if jb.priority < job.priority {
-                                    jb = job
-                                }
-                                best_job = Some(jb);
-                            };
-                        }
+                for queue_name in queues.clone() {
+                    if let Some(queue) = self.queues.get(&queue_name) {
+                        if let Some(job) = queue.get_best_job() {
+                            let mut jb = best_job.unwrap_or(job.clone());
+                            if jb.priority < job.priority {
+                                jb = job
+                            }
+                            best_job = Some(jb);
+                        };
                     }
+                }
                 if let Some(job) = best_job {
                     self.queues
                         .get_mut(&job.queue)
@@ -295,23 +319,24 @@ impl Storage {
                         queue: job.queue,
                     })
                 } else {
-					if wait {
-						return Ok(self.waiting_system.wait(queues, client_id));
-					} else {
-						Response::GetResponse(GetResponseType::NoJob)
-					}
+                    if wait {
+                        return Ok(self.waiting_system.wait(queues, client_id));
+                    } else {
+                        Response::GetResponse(GetResponseType::NoJob)
+                    }
                 }
             }
 
             Request::Abort { id } => {
                 if let Some(queue_name) = self.msg_queues.get(id as usize) {
-					let is_no_job = self
-                            .queues
-                            .get_mut(queue_name)
-                            .unwrap()
-                            .abort_active_job(id, client_id)?;
-					self.waiting_system.queue_update(queue_name.clone(), self.queues.get_mut(queue_name).unwrap());
-					Response::AbortResponse { no_job: is_no_job }
+                    let is_no_job = self
+                        .queues
+                        .get_mut(queue_name)
+                        .unwrap()
+                        .abort_active_job(id, client_id)?;
+                    self.waiting_system
+                        .queue_update(queue_name.clone(), self.queues.get_mut(queue_name).unwrap());
+                    Response::AbortResponse { no_job: is_no_job }
                 } else {
                     Response::AbortResponse { no_job: true }
                 }
@@ -331,8 +356,8 @@ impl Storage {
                 }
             }
         };
-		let (ts, rs) = tokio::sync::oneshot::channel();
-		ts.send(rv).unwrap();
+        let (ts, rs) = tokio::sync::oneshot::channel();
+        ts.send(rv).unwrap();
         Ok(rs)
     }
 }
@@ -344,66 +369,81 @@ async fn handle_client(
 ) -> anyhow::Result<()> {
     let (rh, mut wh) = socket.into_split();
     let reader = tokio::io::BufReader::new(rh);
-	let mut lines = reader.lines();
+    let mut lines = reader.lines();
 
-	let mut owned_messages: Vec<JobId> = vec![];
-	// 1
-	// 2
-	// 3
+    let mut owned_messages: Vec<JobId> = vec![];
+    // 1
+    // 2
+    // 3
 
-	// abort 1 --> dusre
+    // abort 1 --> dusre
 
-	// DISCONNECT: abort1: abort2: abort3
+    // DISCONNECT: abort1: abort2: abort3
 
     loop {
-		let curr_line = lines.next_line().await;
-		let curr_line = || -> Option<String> {
-			Some(curr_line.ok()??)
-		}();
-		let curr_line = match curr_line {
-			Some(x) => x,
-			None => {
-				let mut st_lock = storage.lock();
-				for job_id in owned_messages {
-					st_lock.handle_message(Request::Abort { id: job_id }, client_id).ok();
-				}
-				anyhow::bail!("Closed the connection");
-			}
-		};
+        let curr_line = lines.next_line().await;
+        let curr_line = || -> Option<String> { Some(curr_line.ok()??) }();
+        let curr_line = match curr_line {
+            Some(x) => x,
+            None => {
+                let mut st_lock = storage.lock();
+                for job_id in owned_messages {
+                    st_lock
+                        .handle_message(Request::Abort { id: job_id }, client_id)
+                        .ok();
+                }
+                anyhow::bail!("Closed the connection");
+            }
+        };
 
-		// dbg!(client_id);
-		let msg: Request = match serde_json::from_str(&curr_line) {
-			Ok(x) => x,
-			Err(e) => {
-				let mut response = serde_json::to_string(&Response::Error { msg: "Wrong msg format".into() }.serialize())?;
-				response.push('\n');
-				wh.write_all(response.as_bytes()).await?;
-				continue
-			}
-		};
+        // dbg!(client_id);
+        let msg: Request = match serde_json::from_str(&curr_line) {
+            Ok(x) => x,
+            Err(e) => {
+                let mut response = serde_json::to_string(
+                    &Response::Error {
+                        msg: "Wrong msg format".into(),
+                    }
+                    .serialize(),
+                )?;
+                response.push('\n');
+                wh.write_all(response.as_bytes()).await?;
+                continue;
+            }
+        };
 
-		let res = storage.lock().handle_message(msg, client_id);
-		let res = match res {
-			Ok(x) => x,
-			Err(e) => {
-				let mut response = serde_json::to_string(&Response::Error { msg: "You can't abort that".into() }.serialize())?;
-				response.push('\n');
-				wh.write_all(response.as_bytes()).await?;
-				continue
-			}
-		};
+        let res = storage.lock().handle_message(msg, client_id);
+        let res = match res {
+            Ok(x) => x,
+            Err(e) => {
+                let mut response = serde_json::to_string(
+                    &Response::Error {
+                        msg: "You can't abort that".into(),
+                    }
+                    .serialize(),
+                )?;
+                response.push('\n');
+                wh.write_all(response.as_bytes()).await?;
+                continue;
+            }
+        };
 
-		let res = res.await.expect("Tokio One shot disconnected");
+        let res = res.await.expect("Tokio One shot disconnected");
 
-		match &res {
-			Response::GetResponse(GetResponseType::Ok { id, job, pri, queue }) => {
-				owned_messages.push(*id);
-			},
-			_ => {}
-		}
-		let mut response = serde_json::to_string(&res.serialize())?;
-		response.push('\n');
-		wh.write_all(response.as_bytes()).await?;
+        match &res {
+            Response::GetResponse(GetResponseType::Ok {
+                id,
+                job,
+                pri,
+                queue,
+            }) => {
+                owned_messages.push(*id);
+            }
+            _ => {}
+        }
+        let mut response = serde_json::to_string(&res.serialize())?;
+        response.push('\n');
+        wh.write_all(response.as_bytes()).await?;
     }
 }
 
@@ -434,55 +474,87 @@ pub fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
-	use super::*;
+    use super::*;
 
-	#[tokio::test]
-	async fn test_client_disconnect3() -> anyhow::Result<()> {
-		tokio::task::spawn(run()); // server chala
-		tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    #[tokio::test]
+    async fn test_client_disconnect3() -> anyhow::Result<()> {
+        tokio::task::spawn(run()); // server chala
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
 
-		let (read_half1, mut write_half1) = tokio::net::TcpSocket::new_v4().unwrap().connect("0.0.0.0:3007".parse().unwrap()).await?.into_split();
-		let (read_half2, mut write_half2) = tokio::net::TcpSocket::new_v4().unwrap().connect("0.0.0.0:3007".parse().unwrap()).await?.into_split();
-		let (read_half3, mut write_half3) = tokio::net::TcpSocket::new_v4().unwrap().connect("0.0.0.0:3007".parse().unwrap()).await?.into_split();
-		let (read_half4, mut write_half4) = tokio::net::TcpSocket::new_v4().unwrap().connect("0.0.0.0:3007".parse().unwrap()).await?.into_split();
-		let (read_half5, mut write_half5) = tokio::net::TcpSocket::new_v4().unwrap().connect("0.0.0.0:3007".parse().unwrap()).await?.into_split();
-		let (read_half6, mut write_half6) = tokio::net::TcpSocket::new_v4().unwrap().connect("0.0.0.0:3007".parse().unwrap()).await?.into_split();
+        let (read_half1, mut write_half1) = tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect("0.0.0.0:3007".parse().unwrap())
+            .await?
+            .into_split();
+        let (read_half2, mut write_half2) = tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect("0.0.0.0:3007".parse().unwrap())
+            .await?
+            .into_split();
+        let (read_half3, mut write_half3) = tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect("0.0.0.0:3007".parse().unwrap())
+            .await?
+            .into_split();
+        let (read_half4, mut write_half4) = tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect("0.0.0.0:3007".parse().unwrap())
+            .await?
+            .into_split();
+        let (read_half5, mut write_half5) = tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect("0.0.0.0:3007".parse().unwrap())
+            .await?
+            .into_split();
+        let (read_half6, mut write_half6) = tokio::net::TcpSocket::new_v4()
+            .unwrap()
+            .connect("0.0.0.0:3007".parse().unwrap())
+            .await?
+            .into_split();
 
-		// Client 1 -> give job
-		// Client 2 -> take job
-		// Client 2 -> DISCONNECT
-		// Client 3 -> take job (should get job)
+        // Client 1 -> give job
+        // Client 2 -> take job
+        // Client 2 -> DISCONNECT
+        // Client 3 -> take job (should get job)
 
-		let mut reader2 = tokio::io::BufReader::new(read_half2).lines();
-		let mut reader3 = tokio::io::BufReader::new(read_half3).lines();
+        let mut reader2 = tokio::io::BufReader::new(read_half2).lines();
+        let mut reader3 = tokio::io::BufReader::new(read_half3).lines();
 
-		let mut msg1 = serde_json::to_string( &Request::Put { queue: "Q1".into(), job: json!("title"), pri: 123 })?;
-		msg1.push('\n');
-		write_half1.write(msg1.as_bytes()).await?;
+        let mut msg1 = serde_json::to_string(&Request::Put {
+            queue: "Q1".into(),
+            job: json!("title"),
+            pri: 123,
+        })?;
+        msg1.push('\n');
+        write_half1.write(msg1.as_bytes()).await?;
 
-		let mut msg2 = serde_json::to_string( &Request::Get(GetReq { queues: vec!["Q1".into()], wait: false }))?;
-		msg2.push('\n');
-		write_half2.write(msg2.as_bytes()).await?;
+        let mut msg2 = serde_json::to_string(&Request::Get(GetReq {
+            queues: vec!["Q1".into()],
+            wait: false,
+        }))?;
+        msg2.push('\n');
+        write_half2.write(msg2.as_bytes()).await?;
 
-		let job = reader2.next_line().await.unwrap().unwrap();
-		dbg!(job);
-		write_half2.shutdown().await.unwrap();
-		
-		let mut msg3 = serde_json::to_string( &Request::Get(GetReq { queues: vec!["Q1".into()], wait: false }))?;
-		msg3.push('\n');
-		write_half3.write(msg3.as_bytes()).await?;
+        let job = reader2.next_line().await.unwrap().unwrap();
+        dbg!(job);
+        write_half2.shutdown().await.unwrap();
 
-		select! {
-			l = reader3.next_line() => {
-				dbg!(l.unwrap().unwrap());
-				assert!(false);
-			},
-			_ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
-				anyhow::bail!("Timed out read");
-			}
-		}
-		Ok(())
+        let mut msg3 = serde_json::to_string(&Request::Get(GetReq {
+            queues: vec!["Q1".into()],
+            wait: false,
+        }))?;
+        msg3.push('\n');
+        write_half3.write(msg3.as_bytes()).await?;
 
-
-	}
+        select! {
+            l = reader3.next_line() => {
+                dbg!(l.unwrap().unwrap());
+                assert!(false);
+            },
+            _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {
+                anyhow::bail!("Timed out read");
+            }
+        }
+        Ok(())
+    }
 }

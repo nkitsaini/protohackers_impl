@@ -32,7 +32,7 @@ fn replace_address(val: &str) -> String {
 struct LinedBufReader {
     reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     prev_part: String,
-    disconnected: bool
+    disconnected: bool,
 }
 
 impl LinedBufReader {
@@ -40,7 +40,7 @@ impl LinedBufReader {
         Self {
             reader: val,
             prev_part: Default::default(),
-            disconnected: false
+            disconnected: false,
         }
     }
     pub async fn get_next_line(&mut self) -> Option<String> {
@@ -51,7 +51,7 @@ impl LinedBufReader {
                 self.prev_part = extra_part;
                 return Some(curr_part);
             } else if self.disconnected {
-                return None
+                return None;
             }
             let mut buf = [0; 1];
             let r = self.reader.read_exact(&mut buf).await.ok()?;
