@@ -32,6 +32,7 @@ fn replace_address(val: &str) -> String {
 struct LinedBufReader {
     reader: tokio::io::BufReader<tokio::net::tcp::OwnedReadHalf>,
     prev_part: String,
+    disconnected: bool
 }
 
 impl LinedBufReader {
@@ -39,6 +40,7 @@ impl LinedBufReader {
         Self {
             reader: val,
             prev_part: Default::default(),
+            disconnected: false
         }
     }
     pub async fn get_next_line(&mut self) -> Option<String> {
@@ -48,11 +50,16 @@ impl LinedBufReader {
                 let curr_part = self.prev_part[..i + 1].to_string();
                 self.prev_part = extra_part;
                 return Some(curr_part);
+            } else if self.disconnected {
+                return None
             }
-            let mut buf = [0; 1024];
-            let r = self.reader.read(&mut buf).await.ok()?;
+            let mut buf = [0; 1];
+            let r = self.reader.read_exact(&mut buf).await.ok()?;
             self.prev_part
                 .push_str(&String::from_utf8(buf[..r].to_vec()).ok()?);
+            if r == 0 {
+                self.disconnected = true;
+            }
         }
     }
 }
@@ -73,32 +80,41 @@ async fn handle_user(stream: tokio::net::TcpStream) -> anyhow::Result<()> {
     let mut srl = LinedBufReader::new(s_reader);
     let mut crl = LinedBufReader::new(c_reader);
     let mut name_established = false;
+    let mut client_read_disconnect = false;
+    let mut server_read_disconnect = false;
     loop {
         tokio::select!(
             server_res = srl.get_next_line() => {
-                // let mut server_res = match server_res {
-                // 	Ok(x) => x,
-                // 	Err(_) => break
-                // };
                 let mut server_res = match server_res  {
                     Some(x) => x,
-                    None => break
+                    None =>  {
+                        server_read_disconnect= true;
+                        cwrite_half.shutdown().await;
+                        if server_read_disconnect && client_read_disconnect {
+                            break
+                        }
+                        continue
+                    }
                 };
                 server_res = dbg!(replace_address(&server_res));
-                // server_res.push('\n');
-
-                if cwrite_half.write(server_res.as_bytes()).await.is_err() {
+                if cwrite_half.write_all(server_res.as_bytes()).await.is_err() {
+                    break
+                };
+                if cwrite_half.flush().await.is_err() {
                     break
                 };
             },
             client_req = crl.get_next_line() => {
-                // let client_req = match client_req {
-                // 	Ok(x) => x,
-                // 	Err(_) => break
-                // };
                 let mut client_req = match client_req  {
                     Some(x) => x,
-                    None => break
+                    None => {
+                        client_read_disconnect = true;
+                        swrite_half.shutdown().await;
+                        if server_read_disconnect && client_read_disconnect {
+                            break
+                        }
+                        continue
+                    }
                 };
                 if name_established {
                     dbg!("Updating", &client_req);
@@ -108,7 +124,10 @@ async fn handle_user(stream: tokio::net::TcpStream) -> anyhow::Result<()> {
                     name_established = true;
                 }
                 // client_req.push('\n');
-                if swrite_half.write(client_req.as_bytes()).await.is_err() {
+                if swrite_half.write_all(client_req.as_bytes()).await.is_err() {
+                    break
+                };
+                if swrite_half.flush().await.is_err() {
                     break
                 };
             }
