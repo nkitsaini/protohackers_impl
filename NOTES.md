@@ -21,7 +21,7 @@ class lrclient:
 
 	def send(msg):
 		for m in msg.split():
-			self.send.put(m)
+			self.send.put(m).await
 
 class lrconn:
 	conn: UdpConn

@@ -132,6 +132,23 @@ impl Message {
 		ser_str.as_bytes().to_vec()
 	}
 
+	fn get_ack(&self) -> Option<Message> {
+		let t = match self.message_type {
+			MessageType::Data { pos, data } => {
+				Some(MessageType::Ack { length: pos + data.len() as u64 })
+			},
+			MessageType::Connect => {
+				Some(MessageType::Ack { length: 0 })
+			},
+			MessageType::Close => {
+				Some(MessageType::Close)
+			},
+			MessageType::Ack { length } => {
+				None
+			}
+		};
+		Some(Message { session: self.session, message_type: t? })
+	}
 }
 
 /// Used by application layer
@@ -180,10 +197,137 @@ async fn handle_stream(stream: LRStream) -> anyhow::Result<()> {
 	Ok(())
 }
 
-/// Used by protocol layer
-struct Connection {
+
+enum LRConnection {
+	Closed,
+
+	/// data_recv/send show relation between `Applicaton Layer` and Connection from Connection's Perspective
+	Connected { consumed_buf_len: u64, data_recv: tokio::sync::mpsc::Sender<String>, data_send: tokio::sync::mpsc::Receiver<String> }
+}
+
+enum MessageProcessResult {
+	NoAck,
+	Close,
+	Ack(Message),
+	CloseWithAck(Message),
+}
+
+impl LRConnection {
+	async fn process_msg(&mut self, msg: Message) -> Option<Message> {
+		match msg.message_type {
+			MessageType::Connect => {
+				match self {
+					Self::Closed => {
+						*self = Self::Connected { consumed_buf_len: (), data_recv: (), data_send: () };
+					},
+					Self::Connected { consumed_buf_len, data_recv, data_send } => {}
+				}
+				Some(msg.get_ack())
+			},
+			// MessageType::Close => {
+			// 	MessageProcessResult::CloseWithAck(msg.get_ack().unwrap())
+			// },
+			// MessageType::Ack { length } => {
+
+			// }
+			_ => unimplemented!()
+
+		}
+	}
+}
+
+
+struct SendPacket {
+	msg: Message,
 	addr: SocketAddr,
-	message_box: tokio::sync::mpsc::UnboundedSender<Message>
+	sends: Vec<chrono::DateTime<chrono::Utc>>,
+	is_ack: bool
+}
+
+impl SendPacket {
+	fn new(msg: Message, addr: SocketAddr) -> Self {
+		Self {
+			msg, 
+			addr,
+			sends: vec![],
+			is_ack: false
+		}
+	}
+	fn create_ack_from(msg: Message, addr: SocketAddr) -> Option<Self> {
+		let ack_msg = msg.get_ack()?;
+		Some(Self {
+			msg: ack_msg, 
+			addr,
+			sends: vec![],
+			is_ack: true
+		})
+
+	}
+
+	fn get_ack_msg(&self) -> Option<Message> {
+		if self.is_ack {
+			// There's no acknowledgement for ACK itself
+			return None;
+		}
+		return self.msg.get_ack();
+	}
+
+	fn is_expired(&self) -> bool {
+		match self. sends.get(0) {
+			Some(x) => {
+				(chrono::Utc::now() - *x) >= chrono::Duration::seconds(60)
+			}
+			None => false,
+		}
+	}
+	fn try_tick(&mut self) {
+		self.sends.push(chrono::Utc::now())
+	}
+	fn next_tick_time(&mut self) -> Option<chrono::DateTime<chrono::Utc>> {
+		if self.is_expired() {
+			return None
+		}	
+		Some(match self. sends.last() {
+			Some(x) => {
+				*x + chrono::Duration::seconds(3)
+			}
+			None => {
+				chrono::Utc::now()
+			},
+		})
+	}
+}
+
+struct LRSocket {
+	conn: Arc<tokio::net::UdpSocket>,
+	sessions: HashMap<Session, LRSession>
+}
+
+impl LRSocket {
+	pub fn new(conn: tokio::net::UdpSocket) -> Self {
+		Self {
+			conn: Arc::new(conn),
+			sessions: Default::default()
+		}
+	}
+	async fn run(&mut self) -> anyhow::Result<()> {
+		loop {
+			let mut buf = [0u8; 1024];
+			let (len, addr) = self.conn.recv_from(&mut buf).await?;
+			let msg = Message::parse(buf[..len].to_vec());
+			if 
+		}
+		Ok(())
+	}
+
+	async fn write_loop(conn: Arc<tokio::net::UdpSocket>) -> anyhow::Result<()> {
+		Ok(())
+	}
+
+	async fn handle_message(&mut self, msg: Message, addr: SocketAddr) -> anyhow::Result<()> {
+		
+		Ok(())
+	}
 }
 
 
