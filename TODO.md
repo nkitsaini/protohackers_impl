@@ -10,8 +10,8 @@ x -> done for good
 - [p] 2
 - [p] 3
 - [p] 4
-- [t] 5
+- [~p] 5 (Check why read_exact part is working)
 - [~p] 6
 - [ ] 7
 - [ ] 8
-- [ ] 9
+- [p] 9
