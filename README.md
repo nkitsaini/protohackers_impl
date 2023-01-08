@@ -7,4 +7,4 @@ cargo run -- 3 # run 3rd problem
 ```
 
 Builds single binary to easily move things around between servers.  
-Port should be 3007, but isn't guaranteed.  
+Port should be `3007`, but isn't guaranteed.  
