@@ -1,15 +1,4 @@
 
-/// L1: (Given by os)
-/// 	-> Addr, Packet   
-/// 	<- Addr, Packet
-/// L2
-/// 	-> Message, Packet
-/// 	<- Message, Packet
-/// L3
-/// 	-> conn, String
-/// 	<- conn, String
-/// 
-
 use std::{collections::VecDeque, net::SocketAddr, any};
 
 use once_cell::sync::Lazy;
@@ -29,18 +18,55 @@ enum MessageType {
     Close,
 }
 
+impl MessageType {
+	fn split_data(pos: u64, data: String) -> Vec<(u64, String)> {
+		// \ counts as 2 and / also counts as 2
+		// max_size is 800 let's say
+		let max_size = 800;
+		let mut consumed_pos = pos;
+		let mut curr_string = String::new();
+		let mut curr_size = 0;
+		let mut rv = vec![];
+
+		let char_size = |c: char| -> u64 {
+			match c {
+				'\\' => 2, 
+				'/' => 2,
+				_ => 1
+			}
+		};
+
+		for (i, char) in data.chars().enumerate() {
+			if curr_size + char_size(char) > max_size {
+				let curr_pos = consumed_pos;
+				consumed_pos += curr_string.len() as u64; 
+				rv.push((curr_pos, curr_string.clone()));
+
+				curr_string.clear();
+				curr_string.push(char);
+				curr_size = char_size(char);
+			} else {
+				curr_string.push(char);
+				curr_size += char_size(char);
+			}
+		}
+		rv.push((consumed_pos, curr_string));
+		rv
+	}
+}
+
 #[derive(Debug, Clone)]
-struct Message {
+struct ClientMessage {
     session: u64,
     message_type: MessageType,
 }
 
-impl Message {
+impl ClientMessage {
 	const CONNECT_PAT: Lazy<Regex> = Lazy::new(|| {
 		Regex::new(r#"^/connect/(\d+)/$"#).unwrap()
 	});
 	const DATA_PAT: Lazy<Regex> = Lazy::new(|| {
-		Regex::new(r#"^/data/(\d+)/(\d+)/.*/$"#).unwrap()
+		Regex::new(r#"^/data/(\d+)/(\d+)/((?:.|\n)*)/$"#).unwrap()
 	});
 	const ACK_PAT: Lazy<Regex> = Lazy::new(|| {
 		Regex::new(r#"^/ack/(\d+)/(\d+)/$"#).unwrap()
@@ -50,26 +76,33 @@ impl Message {
 	});
 
 	fn unescape_data(data: &str) -> String {
-		// todo!()
-		return data.to_string();
+		let data = data.replace(r#"\/"#, r#"/"#);
+		let data = data.replace(r#"\\"#, r#"\"#);
+		data
 	}
 	fn escape_data(data: &str) -> String {
-		// todo!()
-		return data.to_string();
+		let data = data.replace('\\', r#"\\"#);
+		let data = data.replace('/', r#"\/"#);
+		data
 	}
 
 	pub fn parse(data: Vec<u8>) -> Option<Self> {
 		let data = String::from_utf8(data).ok()?;
 
+		// data.pop(); // \n
+		dbg!("Valid utf8", &data);
 		if !data.starts_with('/')  || !data.ends_with('/') {
 			return None
 		}
+		dbg!("Data", &data);
 		let second_slash_loc = data[1..].find('/')? +1;
 
 		// Escape only for /data/ message
 		let message_type = &data[1..second_slash_loc];
+		dbg!("Matching", message_type);
 		Some(match message_type {
 			"connect" => {
+				dbg!("Matchedwith connect");
 				let mt = Self::CONNECT_PAT.captures(&data)?;
 				let session: u64 = mt.get(1).unwrap().as_str().parse().ok()?;
 				Self {
@@ -79,9 +112,15 @@ impl Message {
 			},
 			"data" => {
 				let mt = Self::DATA_PAT.captures(&data)?;
+				dbg!(&mt);
 				let session: u64 = mt.get(1).unwrap().as_str().parse().ok()?;
 				let pos: u64 = mt.get(2).unwrap().as_str().parse().ok()?;
 				let content = mt.get(3).unwrap().as_str();
+				let unescaped_content = Self::unescape_data(content);
+				let total_size = unescaped_content.len() + unescaped_content.chars().filter(|x| *x == '\\' || *x == '/').count();
+				if total_size != content.len() {
+					return None // Invalid escape
+				}
 				Self {
 					session,
 					message_type: MessageType::Data { pos, data: Self::unescape_data(content) }
@@ -113,16 +152,16 @@ impl Message {
 
 	fn serialize(&self) -> Vec<u8> {
 		let session = self.session;
-		let ser_str = match self.message_type {
+		let ser_str = match &self.message_type {
 			MessageType::Connect => {
 				format!("/connect/{session}/")
 			},
 			MessageType::Data { pos, data } => {
 				// TODO split into multiple?
-				format!("/data/{session}/{pos}/{data}", data=Self::escape_data(&data))
+				format!("/data/{session}/{pos}/{data}/", data=Self::escape_data(&data))
 			},
 			MessageType::Ack { length } => {
-				format!("/ack/{session}/{length}")
+				format!("/ack/{session}/{length}/")
 			},
 			MessageType::Close => {
 				format!("/close/{session}/")
@@ -132,8 +171,8 @@ impl Message {
 		ser_str.as_bytes().to_vec()
 	}
 
-	fn get_ack(&self) -> Option<Message> {
-		let t = match self.message_type {
+	fn get_ack(&self) -> Option<ClientMessage> {
+		let t = match &self.message_type {
 			MessageType::Data { pos, data } => {
 				Some(MessageType::Ack { length: pos + data.len() as u64 })
 			},
@@ -147,246 +186,253 @@ impl Message {
 				None
 			}
 		};
-		Some(Message { session: self.session, message_type: t? })
+		Some(ClientMessage { session: self.session, message_type: t? })
 	}
 }
 
-/// Used by application layer
-struct LRStream {
-	write_half: LRStreamWriteHalf,
-	read_half: LRStreamReadHalf,
-}
-impl LRStream {
-	fn new(addr: SocketAddr, recv_q: tokio::sync::mpsc::UnboundedReceiver<Message>, send_q: tokio::sync::mpsc::UnboundedSender<(Message, SocketAddr)>) -> Self {
-		Self {
-			write_half: LRStreamWriteHalf { addr, send_q },
 
-			read_half: LRStreamReadHalf {recv_q}
+#[derive(Debug)]
+struct InternalMessage {
+	send_msg: (u64, String),
+	last_sends: Vec<chrono::DateTime<chrono::Utc>>
+}
+
+impl InternalMessage {
+	fn ack_until(&self) -> u64 {
+		return self.send_msg.0 + self.send_msg.1.len() as u64
+	}
+	fn is_expired(&self) -> bool {
+		let total_duration = chrono::Duration::seconds(60);
+		if let Some(x) = self.last_sends.first() {
+			return (chrono::Utc::now() - *x) > total_duration
+		};
+		return false;
+	}
+	fn tick(&mut self) -> chrono::DateTime<chrono::Utc> {
+		let tick_gaps = chrono::Duration::seconds(3);
+		let curr_run = chrono::Utc::now();
+		self.last_sends.push(curr_run);
+		curr_run + tick_gaps
+	}
+
+	fn to_client_msg(&self) -> MessageType {
+		return MessageType::Data { pos: self.send_msg.0, data: self.send_msg.1.clone() }
+	}
+}
+
+#[derive(Debug)]
+enum Message {
+	Internal(InternalMessage),
+	Client(ClientMessage)
+}
+
+struct ActiveConnection {
+	sent_ack_until: u64,
+	sent_until: u64,
+	consumed_until: u64,
+	buffered: String,
+	send_buffered: Vec<(u64, String)>,
+	msg_send: tokio::sync::mpsc::Sender<Message>,
+	udp_conn: Arc<tokio::net::UdpSocket>, 
+	session: Session,
+	peer_addr: SocketAddr
+}
+impl ActiveConnection {
+	fn recv_until(&self) -> u64 {
+		self.buffered.len() as u64 + self.consumed_until
+	}
+
+	fn new(send: tokio::sync::mpsc::Sender<Message>, conn: Arc<tokio::net::UdpSocket>, session: Session, peer_addr: SocketAddr) -> Self {
+		ActiveConnection {
+			sent_ack_until: 0,
+			consumed_until: 0,
+			buffered: String::new(),
+			send_buffered: vec![],
+			sent_until: 0,
+			msg_send: send, udp_conn: conn,
+			session,
+			peer_addr
 		}
 	}
-	async fn recv(&mut self) -> anyhow::Result<Message> {
-		self.read_half.recv().await
-	}
-	fn send(&self, message: Message) -> anyhow::Result<()> {
-		self.write_half.send(message)
-	}
-}
-struct LRStreamWriteHalf {
-	addr: SocketAddr,
-	send_q: tokio::sync::mpsc::UnboundedSender<(Message, SocketAddr)>,
-}
 
-struct LRStreamReadHalf {
-	recv_q: tokio::sync::mpsc::UnboundedReceiver<Message>,
-}
-impl LRStreamReadHalf {
-	async fn recv(&mut self) -> anyhow::Result<Message> {
-		Ok(self.recv_q.recv().await.context("Closed Connection")?)
-	}
-}
-impl LRStreamWriteHalf {
-	fn send(&self, message: Message) -> anyhow::Result<()> {
-		self.send_q.send((message, self.addr))?;
+	async fn send_msg(&mut self, msg: MessageType) -> anyhow::Result<()> {
+		let cm = ClientMessage {session: self.session, message_type: msg};
+		self.udp_conn.send_to(&cm.serialize(), self.peer_addr).await?;
 		Ok(())
 	}
+
+	async fn process_buffers(&mut self) -> anyhow::Result<()> {
+		// Pick from send buffer if something is remaining
+		// Otherwise see from recieved buffer is newline is present
+
+		// Recieved buffer
+		if dbg!(self.send_buffered.is_empty()) {
+			if let Some(i) = self.buffered.find('\n') {
+				// let buf_clone = self.buffered.clone();
+				let (curr, rest) = self.buffered.split_at(i+1);
+				let mut curr = curr.to_string();
+				self.consumed_until += curr.len() as u64;
+				self.buffered = rest.to_string();
+				curr.pop(); // reomove `/n`
+				dbg!(curr.clone());
+				curr = curr.chars().rev().collect();
+				curr.push('\n');
+				let mut splits = dbg!(MessageType::split_data(self.sent_until, curr));
+				splits.reverse();
+				self.send_buffered = splits;
+			}
+		}
+
+		if let Some((pos, content)) = self.send_buffered.pop() {
+			self.sent_until = pos + content.len() as u64;
+			self.msg_send.send(Message::Internal(InternalMessage { send_msg: (pos, content.clone()), last_sends: vec![] })).await?;
+			// self.send_msg(MessageType::Data { pos, data: content }).await?;
+		}
+
+		Ok(())
+	}
+
+	/// Returns true if connection should be closed
+	async fn handle_msg(&mut self, msg: Message) -> anyhow::Result<bool> {
+		match msg {
+			Message::Internal(mut msg) => {
+				if msg.ack_until() <= self.sent_ack_until {
+					// Already ack
+					return Ok(false);
+				}
+				if msg.is_expired() {
+					return Ok(true);
+				}
+				let client_msg = msg.to_client_msg();
+				self.send_msg(client_msg).await?;
+				let next_run = msg.tick();
+
+				let msg_sender = self.msg_send.clone();
+				tokio::spawn(async move {
+					let sleep_time = next_run - chrono::Utc::now();
+					tokio::time::sleep(sleep_time.to_std().expect("non zero wait")).await;
+					msg_sender.send(Message::Internal(msg)).await;
+				});
+
+			},
+			Message::Client(cm) => {
+				match cm.message_type {
+					MessageType::Connect => {
+						self.send_msg(MessageType::Ack { length: 0 }).await?;
+					},
+					MessageType::Data { pos, data } => {
+						// Got new data
+						if pos <= self.recv_until() && pos + data.len() as u64 > self.recv_until() { 
+							let new_data = pos + data.len() as u64 - self.recv_until();
+							self.buffered += &data[((data.len() as u64 - new_data) as usize)..];
+						} 
+						self.send_msg(MessageType::Ack { length: self.recv_until() }).await?;
+						self.process_buffers().await?;
+					},
+					MessageType::Ack { length } => {
+						if length > self.sent_until {
+							self.send_msg(MessageType::Close).await?;
+							return Ok(true);
+						};
+						self.sent_ack_until = length.max(self.sent_ack_until); 
+						self.process_buffers().await?;
+					},
+					MessageType::Close => {
+						self.send_msg(MessageType::Close).await?;
+						return Ok(true)
+					}
+				}
+			}
+		};
+
+		Ok(false)
+	}
 }
 
-async fn handle_stream(stream: LRStream) -> anyhow::Result<()> {
-	// LRStream.
-	// send ack first
-	Ok(())
-}
-
-
-enum LRConnection {
+enum LRConnectionState {
 	Closed,
-
-	/// data_recv/send show relation between `Applicaton Layer` and Connection from Connection's Perspective
-	Connected { consumed_buf_len: u64, data_recv: tokio::sync::mpsc::Sender<String>, data_send: tokio::sync::mpsc::Receiver<String> }
+	Active(ActiveConnection)
 }
-
-enum MessageProcessResult {
-	NoAck,
-	Close,
-	Ack(Message),
-	CloseWithAck(Message),
+struct LRConnection {
+	state: LRConnectionState,
+	/// To only be used for sending packets
+	udp_conn: Arc<tokio::net::UdpSocket>, 
+	peer_addr: SocketAddr,
+	session: Session,
+	msg_recv: tokio::sync::mpsc::Receiver<Message>,
+	msg_send: tokio::sync::mpsc::Sender<Message>
 }
 
 impl LRConnection {
-	async fn process_msg(&mut self, msg: Message) -> Option<Message> {
-		match msg.message_type {
-			MessageType::Connect => {
-				match self {
-					Self::Closed => {
-						*self = Self::Connected { consumed_buf_len: (), data_recv: (), data_send: () };
-					},
-					Self::Connected { consumed_buf_len, data_recv, data_send } => {}
-				}
-				Some(msg.get_ack())
-			},
-			// MessageType::Close => {
-			// 	MessageProcessResult::CloseWithAck(msg.get_ack().unwrap())
-			// },
-			// MessageType::Ack { length } => {
-
-			// }
-			_ => unimplemented!()
-
-		}
-	}
-}
-
-
-struct SendPacket {
-	msg: Message,
-	addr: SocketAddr,
-	sends: Vec<chrono::DateTime<chrono::Utc>>,
-	is_ack: bool
-}
-
-impl SendPacket {
-	fn new(msg: Message, addr: SocketAddr) -> Self {
+	pub fn new(conn: Arc<tokio::net::UdpSocket>, peer_addr: SocketAddr, session: Session) -> Self {
+		let (tx, rx) = tokio::sync::mpsc::channel(1024);
 		Self {
-			msg, 
-			addr,
-			sends: vec![],
-			is_ack: false
+			state: LRConnectionState::Closed,
+			udp_conn: conn,
+			peer_addr,
+			session,
+			msg_recv: rx,
+			msg_send: tx
 		}
 	}
-	fn create_ack_from(msg: Message, addr: SocketAddr) -> Option<Self> {
-		let ack_msg = msg.get_ack()?;
-		Some(Self {
-			msg: ack_msg, 
-			addr,
-			sends: vec![],
-			is_ack: true
-		})
-
-	}
-
-	fn get_ack_msg(&self) -> Option<Message> {
-		if self.is_ack {
-			// There's no acknowledgement for ACK itself
-			return None;
-		}
-		return self.msg.get_ack();
-	}
-
-	fn is_expired(&self) -> bool {
-		match self. sends.get(0) {
-			Some(x) => {
-				(chrono::Utc::now() - *x) >= chrono::Duration::seconds(60)
-			}
-			None => false,
-		}
-	}
-	fn try_tick(&mut self) {
-		self.sends.push(chrono::Utc::now())
-	}
-	fn next_tick_time(&mut self) -> Option<chrono::DateTime<chrono::Utc>> {
-		if self.is_expired() {
-			return None
-		}	
-		Some(match self. sends.last() {
-			Some(x) => {
-				*x + chrono::Duration::seconds(3)
-			}
-			None => {
-				chrono::Utc::now()
-			},
-		})
-	}
-}
-
-struct LRSocket {
-	conn: Arc<tokio::net::UdpSocket>,
-	sessions: HashMap<Session, LRSession>
-}
-
-impl LRSocket {
-	pub fn new(conn: tokio::net::UdpSocket) -> Self {
-		Self {
-			conn: Arc::new(conn),
-			sessions: Default::default()
-		}
+	async fn send_msg(&mut self, msg: MessageType) -> anyhow::Result<()> {
+		let cm = ClientMessage {session: self.session, message_type: msg};
+		self.udp_conn.send_to(&cm.serialize(), self.peer_addr).await?;
+		Ok(())
 	}
 	async fn run(&mut self) -> anyhow::Result<()> {
 		loop {
-			let mut buf = [0u8; 1024];
-			let (len, addr) = self.conn.recv_from(&mut buf).await?;
-			let msg = Message::parse(buf[..len].to_vec());
-			if 
+			let msg = self.msg_recv.recv().await.context("queue closed")?;
+			self.handle_msg(msg).await?;
 		}
-		Ok(())
 	}
-
-	async fn write_loop(conn: Arc<tokio::net::UdpSocket>) -> anyhow::Result<()> {
-		Ok(())
-	}
-
-	async fn handle_message(&mut self, msg: Message, addr: SocketAddr) -> anyhow::Result<()> {
-		
+	async fn handle_msg(&mut self, msg: Message) -> anyhow::Result<()> {
+		match &mut self.state {
+			LRConnectionState::Closed => {
+				match msg {
+					Message::Client(ClientMessage { session, message_type: MessageType::Connect }) => {
+						self.state = LRConnectionState::Active(ActiveConnection::new(self.msg_send.clone(), self.udp_conn.clone(), self.session, self.peer_addr));
+						self.send_msg(MessageType::Ack { length: 0 }).await?;
+					},
+					_ => { self.send_msg(MessageType::Close).await?  }
+				}
+			}
+			LRConnectionState::Active(ac) => {
+				if ac.handle_msg(msg).await? {
+					self.state = LRConnectionState::Closed
+				}
+			}
+		}
 		Ok(())
 	}
 }
 
-
 async fn run() -> anyhow::Result<()> {
-    let sock = tokio::net::UdpSocket::bind("0.0.0.0:3007").await?;
-	let sock = Arc::new(sock);
-	let sock_sender = sock.clone();
-	let mut connections: HashMap<Session, Connection> = HashMap::new();
-	let connections = Arc::new(Mutex::new(connections));
-	let connections_sender = connections.clone();
-	let (message_send_tx, mut message_send_rx) = tokio::sync::mpsc::unbounded_channel::<(Message, SocketAddr)>();
-
-	// Recie
-    let reciever = || async move {
-		let mut active_connections: HashMap<Session, Connection> = Default::default();
-
-		loop {
-			let mut buf = [0u8; 1024];
-			let (len, addr) = sock.recv_from(&mut buf).await?;
-			let buf = buf[..len].to_vec();
-
-			let message = match Message::parse(buf) {
-				Some(x) => x,
-				None => continue
-			};
-
-			match message.message_type {
-				MessageType::Connect => {
-					let conn = &mut active_connections;
-					if !conn.contains_key(&message.session) {
-						let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-						conn.insert(message.session, Connection { addr, message_box: tx });
-						let lsend_tx = message_send_tx.clone();
-						tokio::spawn(async move {
-							handle_stream(LRStream::new(
-								addr,
-								rx,
-								lsend_tx,
-							)).await;
-						});
-					}
-				},
-				_ => unimplemented!()
-			}
+	let connection = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:3007").await?);
+	let mut connections : HashMap<u64, tokio::sync::mpsc::Sender<Message>>= HashMap::new();
+	loop {
+		let mut buf = [0u8; 1024];
+		let (len, addr) = connection.recv_from(&mut buf).await?;
+		let packet = buf[..len].to_vec();
+		let p = match dbg!(ClientMessage::parse(packet)) {
+			Some(x) => x,
+			None => continue
+		};
+		if connections.get(&p.session).is_none() {
+			// let (tx, rx) = tokio::sync::mpsc::channel(1024);
+			// connections.insert(p.session, tx);
+			let mut conn = LRConnection::new(connection.clone(), addr, p.session);
+			let tx = conn.msg_send.clone();
+			tokio::spawn(async move {
+				conn.run().await?;
+				Ok(()) as anyhow::Result<()>
+			});
+			connections.insert(p.session, tx);
 		}
-		Ok(()) as anyhow::Result<()>
-    };
-
-	let sender = || async move {
-		loop {
-			let msg = message_send_rx.recv().await.unwrap();
-			sock_sender.send_to(&msg.0.serialize(), msg.1).await?;
-		}
-		Ok(()) as anyhow::Result<()>
-	};
-	select! {
-		_ = sender() => {},
-		_ = reciever() => {},
-	};
+		connections.get(&p.session).unwrap().send(dbg!(Message::Client(p))).await?;
+		
+		// connection.send_to(buf, target);
+	}
 	Ok(())
 }
 
@@ -403,5 +449,45 @@ pub fn main() -> anyhow::Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Mutex;
+
     use super::*;
+
+	#[tokio::test]
+	async fn test_p7() -> anyhow::Result<()> {
+		tokio::spawn(run());
+		tokio::time::sleep(Duration::from_millis(10)).await;
+		let sock = Arc::new(tokio::net::UdpSocket::bind("0.0.0.0:8080").await?);
+		sock.connect("0.0.0.0:3007".parse::<SocketAddr>()?).await?;
+		let sock_pri = sock.clone();
+		let msg_history: Arc<Mutex<Vec<(bool, String)>>> = Arc::new(Mutex::new(Default::default()));
+		let msg_hist2 = msg_history.clone();
+		tokio::spawn(async move {
+			loop {
+				let mut buf =  [0u8; 1024];
+				let len = sock_pri.recv(&mut buf).await?;
+				let msg = String::from_utf8(buf[..len].to_vec())?;
+				msg_hist2.lock().unwrap().push((true, msg.clone()));
+				println!("=== Msg Recvd: {}",  msg);
+			}
+			Ok(()) as anyhow::Result<()>
+		});
+		let sends = vec![
+			("/connect/12345/", Duration::from_millis(10)),
+			("/data/12345/0/hello\n/", Duration::from_millis(10)),
+			("/ack/12345/6/", Duration::from_millis(10)),
+			("/data/12345/6/Hello, world!\n/", Duration::from_millis(10)),
+			("/ack/12345/20/", Duration::from_millis(10)),
+			("/close/12345/", Duration::from_millis(10)),
+		];
+		for (msg, wait) in sends {
+			sock.send(msg.as_bytes()).await?;
+			msg_history.lock().unwrap().push((false, msg.to_string()));
+			println!("=== Msg Sent: {}",  msg);
+			tokio::time::sleep(wait).await;
+		}
+		dbg!(msg_history.lock().unwrap().clone());
+		Ok(())
+		// let client = tokio::net::UdpSocket::sen
+	}
 }

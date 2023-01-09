@@ -16,3 +16,5 @@ pub(crate) use std::{collections::HashSet, sync::Arc};
 pub(crate) use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt};
 pub(crate) use tokio::join;
 pub(crate) use tokio::select;
+
+pub(crate) const PORT: u16 = 3007;
