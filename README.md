@@ -6,5 +6,6 @@ cargo run -- 3 # run 3rd problem
 # etc ...
 ```
 
-Builds single binary to easily move things around between servers.  
 Port should be `3007`, but isn't guaranteed.  
+
+Builds single binary to easily move things around between servers. I'll think about build seperate binaries when the binary size crosses `50MB` mark (currently it's around `8-9MB`)  
