@@ -10,6 +10,7 @@ mod p6_speed;
 mod p7_reversal;
 mod p8_insecure;
 mod p9_jobqueue;
+mod p10_vcs;
 mod prelude;
 mod utils;
 
@@ -33,6 +34,7 @@ fn main() {
         7 => p7_reversal::main,
         8 => p8_insecure::main,
         9 => p9_jobqueue::main,
+        10 => p10_vcs::main,
         _ => unimplemented!(),
     };
     executor().unwrap();
