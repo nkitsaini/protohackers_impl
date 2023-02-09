@@ -116,15 +116,6 @@ impl VCS for InMemoryStorage {
 	}
 }
 
-struct File {
-	name: String,
-	version: String
-}
-
-struct Dir {
-	name: String,
-}
-
 enum DirItem {
 	File {name: Name, version: Version},
 	Dir {name: Name}
