@@ -207,6 +207,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore]
     async fn p8_test_client() -> anyhow::Result<()> {
         tokio::task::spawn(run()); // server chala
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

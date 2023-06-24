@@ -1,6 +1,8 @@
 #![feature(never_type)]
 use clap::Parser;
 mod p0_tcp;
+mod p10_vcs;
+mod p11_pest_control;
 mod p1_prime;
 mod p2_means;
 mod p3_chat;
@@ -10,7 +12,6 @@ mod p6_speed;
 mod p7_reversal;
 mod p8_insecure;
 mod p9_jobqueue;
-mod p10_vcs;
 mod prelude;
 mod utils;
 
@@ -35,6 +36,7 @@ fn main() {
         8 => p8_insecure::main,
         9 => p9_jobqueue::main,
         10 => p10_vcs::main,
+        11 => p11_pest_control::main,
         _ => unimplemented!(),
     };
     executor().unwrap();

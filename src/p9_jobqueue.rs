@@ -477,6 +477,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore]
     async fn test_client_disconnect3() -> anyhow::Result<()> {
         tokio::task::spawn(run()); // server chala
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;

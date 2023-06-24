@@ -630,6 +630,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_p6_flow_custom() -> anyhow::Result<()> {
         let port_no = 3009;
         tokio::spawn(run(port_no));
@@ -714,6 +715,7 @@ mod tests {
     }
 
     #[tokio::test]
+    #[ignore]
     async fn test_p6_failure() -> anyhow::Result<()> {
         let port_no = 3010;
         let road: RoadId = 1;

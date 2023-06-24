@@ -8,6 +8,7 @@ edition = "2021"
 [dependencies]
 anyhow = "1.0.68"
 async-channel = "1.8.0"
+async-trait = "0.1.68"
 chrono = "0.4.23"
 clap = { version = "4.0.32", features = ["derive"] }
 hex = "0.4.3"
